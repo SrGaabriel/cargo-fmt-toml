@@ -1,11 +1,16 @@
 //! Cargo subcommand to format and normalize Cargo.toml files according to
 //! workspace standards.
 //!
+//! This tool is an **opinionated enforcer**: it applies one canonical layout
+//! (top-level table order, `[package]` field order, sorted dependency tables,
+//! and workspace rules) so manifests are predictable in review and diff.
+//!
 //! This tool enforces:
 //! 1. All dependency versions at workspace level
 //! 2. Internal dependencies use { workspace = true }
 //! 3. All dependencies sorted alphabetically
-//! 4. Consistent [package] section format
+//! 4. Consistent `[package]` field order (`PACKAGE_FIELD_ORDER`)
+//! 5. Consistent top-level table order (`TOP_LEVEL_SECTION_ORDER`)
 
 use std::collections::BTreeMap;
 use std::path::{
@@ -27,6 +32,65 @@ use toml_edit::{
     Value,
 };
 
+/// Preferred order of top-level logical tables in `Cargo.toml`.
+///
+/// Keys that exist are emitted in this sequence. Any other top-level key is
+/// emitted **after** these, sorted **lexicographically** (deterministic diffs;
+/// covers Cargo extensions and tooling-specific roots).
+const TOP_LEVEL_SECTION_ORDER: &[&str] = &[
+    "package",
+    "lib",
+    "bin",
+    "test",
+    "bench",
+    "example",
+    "dependencies",
+    "dev-dependencies",
+    "build-dependencies",
+    "features",
+    "target",
+    "workspace",
+    "patch",
+    "replace",
+    "profile",
+    "lints",
+    "badges",
+    "cargo-features",
+];
+
+/// Preferred inline key order inside `[package]`.
+///
+/// Keys that exist are emitted in this sequence. Any other key in `[package]`
+/// follows **lexicographically** after these.
+const PACKAGE_FIELD_ORDER: &[&str] = &[
+    "name",
+    "version",
+    "description",
+    "authors",
+    "edition",
+    "rust-version",
+    "license",
+    "license-file",
+    "readme",
+    "documentation",
+    "homepage",
+    "repository",
+    "publish",
+    "keywords",
+    "categories",
+    "default-run",
+    "autolib",
+    "autobins",
+    "autoexamples",
+    "autotests",
+    "autobenches",
+    "include",
+    "exclude",
+    "build",
+    "links",
+    "metadata",
+];
+
 /// Cargo runs this binary as `cargo-fmt-toml fmt-toml …` (first argument is
 /// always the `fmt-toml` subcommand name). Model that with a top-level
 /// subcommand enum. Use `name = "cargo"` + `bin_name = "cargo-fmt-toml"` so
@@ -38,7 +102,7 @@ use toml_edit::{
     bin_name = "cargo-fmt-toml",
     version = env!("CARGO_PKG_VERSION"),
     propagate_version = true,
-    about = "Format and normalize Cargo.toml files according to workspace standards",
+    about = "Opinionated Cargo.toml formatter and workspace policy enforcer",
     after_help = "Cargo runs this program as: cargo-fmt-toml fmt-toml …"
 )]
 enum CargoFmtTomlCli {
@@ -376,40 +440,25 @@ fn collapse_table_entries(table: &mut Table) -> usize {
 }
 
 fn reorder_sections(doc: &mut DocumentMut, logger: &mut ProgressLogger) -> Result<usize> {
-    // Define the desired section order for top-level keys.
-    let section_order = vec![
-        "package",
-        "lib",
-        "bin",
-        "test",
-        "bench",
-        "example",
-        "dependencies",
-        "dev-dependencies",
-        "build-dependencies",
-        "target",
-        "features",
-    ];
-
     // Get current top-level keys from the document.  doc.iter()
     // correctly identifies top-level keys including dotted sections
     // like [workspace.package] grouped under "workspace".
     let current_keys: Vec<String> = doc.iter().map(|(k, _)| k.to_string()).collect();
 
-    // Build expected order: ordered sections first, then any extra
-    // sections (workspace, profile, lints, patch, etc.) in their
-    // original relative order.
     let mut expected_keys = Vec::new();
-    for section in &section_order {
+    for &section in TOP_LEVEL_SECTION_ORDER {
         if current_keys.contains(&section.to_string()) {
             expected_keys.push(section.to_string());
         }
     }
-    for key in &current_keys {
-        if !section_order.contains(&key.as_str()) {
-            expected_keys.push(key.clone());
-        }
-    }
+
+    let mut unknown: Vec<String> = current_keys
+        .iter()
+        .filter(|k| !TOP_LEVEL_SECTION_ORDER.contains(&k.as_str()))
+        .cloned()
+        .collect();
+    unknown.sort();
+    expected_keys.extend(unknown);
 
     // Check if reordering is needed.
     if current_keys == expected_keys {
@@ -478,33 +527,21 @@ fn format_package_section(doc: &mut DocumentMut, logger: &mut ProgressLogger) ->
     let mut changes = 0;
 
     if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
-        // Define the desired order
-        let desired_order = vec![
-            "name",
-            "description",
-            "version",
-            "edition",
-            "license-file",
-            "authors",
-            "rust-version",
-            "readme",
-        ];
-
-        // Check if order is correct
         let current_keys: Vec<String> = package.iter().map(|(k, _)| k.to_string()).collect();
         let mut expected_keys = Vec::new();
-        for key in &desired_order {
+        for &key in PACKAGE_FIELD_ORDER {
             if package.contains_key(key) {
                 expected_keys.push(key.to_string());
             }
         }
 
-        // Add any keys that aren't in desired_order at the end
-        for key in &current_keys {
-            if !desired_order.contains(&key.as_str()) {
-                expected_keys.push(key.clone());
-            }
-        }
+        let mut unknown: Vec<String> = current_keys
+            .iter()
+            .filter(|k| !PACKAGE_FIELD_ORDER.contains(&k.as_str()))
+            .cloned()
+            .collect();
+        unknown.sort();
+        expected_keys.extend(unknown);
 
         if current_keys != expected_keys {
             // Need to reorder - collect all entries first
@@ -574,6 +611,58 @@ fn sort_table_in_place(table: &mut Table, logger: &mut ProgressLogger) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_package_keys_sort_lexicographically() {
+        let input = "\
+[package]
+name = \"t\"
+version = \"0.1.0\"
+zebra = \"z\"
+apple = \"a\"
+edition = \"2021\"
+";
+        let mut doc = input.parse::<DocumentMut>().expect("valid TOML");
+        let mut logger = ProgressLogger::new(true);
+        format_package_section(&mut doc, &mut logger).expect("format package");
+        let result = doc.to_string();
+        let apple = result.find("apple").expect("apple");
+        let zebra = result.find("zebra").expect("zebra");
+        assert!(
+            apple < zebra,
+            "unknown [package] keys should sort lexicographically; got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn unknown_top_level_keys_sort_lexicographically_after_canonical() {
+        let input = "\
+[package]
+name = \"t\"
+version = \"0.1.0\"
+edition = \"2021\"
+
+[dependencies]
+a = \"1\"
+
+[zebra]
+answer = 42
+
+[apple]
+x = 1
+
+[lints]
+workspace = true
+";
+        let result = reorder(input);
+        let lints_pos = result.find("[lints]").expect("lints");
+        let apple_pos = result.find("[apple]").expect("apple");
+        let zebra_pos = result.find("[zebra]").expect("zebra");
+        assert!(
+            lints_pos < apple_pos && apple_pos < zebra_pos,
+            "expected [lints] then [apple] then [zebra] (sorted unknown), got:\n{result}"
+        );
+    }
 
     #[test]
     fn git_worktree_root_absent_without_repository() {
@@ -670,7 +759,7 @@ tokio = { version = \"1.0\" }
     }
 
     #[test]
-    fn sections_not_in_order_list_are_preserved() {
+    fn lints_section_retained_when_reordering_package_and_dependencies() {
         let input = "\
 [package]
 name = \"test\"
@@ -1521,7 +1610,7 @@ edition = \"2024\"
 serde = { version = \"1.0\", features = [\"derive\"] }
 tokio = { version = \"1.0\" }
 ",
-            // sections_not_in_order_list_are_preserved
+            // lints_section_retained_when_reordering_package_and_dependencies
             "\
 [package]
 name = \"test\"
