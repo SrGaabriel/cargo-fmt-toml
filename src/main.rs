@@ -115,7 +115,8 @@ const PACKAGE_FIELD_ORDER: &[&str] = &[
     after_help = "Cargo runs this program as: cargo-fmt-toml fmt-toml …"
 )]
 enum CargoFmtTomlCli {
-    /// Format every workspace member manifest under the workspace (and git) root
+    /// Format every workspace member manifest under the workspace (and git)
+    /// root
     #[command(name = "fmt-toml", override_usage = "cargo fmt-toml [OPTIONS]")]
     FmtToml(FmtArgs),
 }
@@ -675,10 +676,8 @@ workspace = true
 
     #[test]
     fn git_worktree_root_absent_without_repository() {
-        let base = std::env::temp_dir().join(format!(
-            "cargo-fmt-toml-no-git-{}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("cargo-fmt-toml-no-git-{}", std::process::id()));
         std::fs::create_dir_all(&base).expect("mkdir");
         assert!(try_git_worktree_root(&base).is_none());
         let _ = std::fs::remove_dir_all(&base);
