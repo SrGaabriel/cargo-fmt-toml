@@ -7,8 +7,18 @@
 [![Downloads](https://img.shields.io/crates/d/cargo-fmt-toml.svg)](https://crates.io/crates/cargo-fmt-toml)
 
 Cargo subcommand that **opinionatedly** formats and normalizes `Cargo.toml`
-files: one canonical layout for top-level tables, `[package]` fields, and
-dependency tables, plus workspace policy rules.
+**layout**: top-level table order, `[package]` field order, sorted dependency
+**keys**, and nested-table collapse.
+
+## This crate vs [`cargo-propagate-features`](https://github.com/dataroadinc/cargo-propagate-features)
+
+| Expect from **cargo-fmt-toml** | Expect from **cargo-propagate-features** |
+| --- | --- |
+| **Structural** changes only: where sections and keys appear, alphabetical dependency **names**, inline-table collapse. | **Semantic** changes to `[features]`: when crate A has feature `X` and depends on B with the same `X`, A’s feature list gains `B/X` (and similar wiring) so enabling `X` on A turns on the matching features on deps. |
+| Stable, review-friendly diffs for manifest **shape**; does **not** change versions, add/remove dependencies, or rewrite specs to `workspace = true`. | Focuses on **feature graphs** across workspace/path dependencies, not on enforcing a canonical TOML layout. |
+| Run when you want every member `Cargo.toml` to follow the same ordering rules. | Run when you want feature flags to **propagate** correctly across crates with shared feature names. |
+
+The two tools complement each other: format first (or last) for consistent layout; use propagate-features when you need automatic `dep/feature` entries in `[features]`.
 
 Only manifests for **workspace members** are considered, and only if they lie
 under the **canonical workspace root** you pass (default: current directory).
@@ -30,9 +40,9 @@ The formatter is meant to be a **policy enforcer**, not a minimal pretty-printer
   at the end of `[package]`.
 - **Dependencies** — Keys in `dependencies`, `dev-dependencies`,
   `build-dependencies`, and target-specific dependency tables are sorted
-  alphabetically.
-- **Workspace rules** — Centralized versions and `workspace = true` for internal
-  crates (see Features below).
+  alphabetically (crate names only; values are not rewritten).
+- **TOML shape** — Nested tables in `[package]` and dependency sections may be
+  collapsed to inline tables where the formatter applies that transform.
 
 The exact lists live in `src/main.rs` as `TOP_LEVEL_SECTION_ORDER` and
 `PACKAGE_FIELD_ORDER`; change them there when the policy evolves.
@@ -75,13 +85,17 @@ CARGO_NET_OFFLINE=false cargo install cargo-fmt-toml
 
 1. **Canonical layout** — Opinionated top-level and `[package]` ordering;
    unknown keys sorted for stable diffs
-2. **Workspace dependencies** — Versions belong in the workspace; member crates
-   use `workspace = true`
-3. **Internal path deps** — Workspace crates reference each other with
-   `{ workspace = true }`
-4. **Sorted dependency tables** — Alphabetical keys in dependency sections
-5. **`[package]` field normalization** — Consistent key order and inline table
-   style where the tool applies transforms
+2. **Sorted dependency tables** — Alphabetical **keys** in dependency sections
+   (no version or `workspace = true` rewriting)
+3. **`[package]` field normalization** — Consistent key order and inline-table
+   collapse where applied
+4. **Member-only, repo-scoped** — Formats workspace member manifests under the
+   chosen root and git work tree (see introduction above)
+
+Workspace dependency policy (centralizing versions, `workspace = true` refactors)
+and **feature propagation** are out of scope here; see the table in
+[This crate vs cargo-propagate-features](#this-crate-vs-cargo-propagate-features)
+and [`cargo-propagate-features`](https://github.com/dataroadinc/cargo-propagate-features).
 
 ## Usage
 
@@ -108,7 +122,8 @@ cargo fmt-toml --help
 
 `[package]` keys are ordered per `PACKAGE_FIELD_ORDER` in `src/main.rs`
 (identity and metadata first, then `metadata` and any other keys sorted at the
-end). Workspace members often look like:
+end). The formatter does not insert `workspace = true`; below is a typical
+**hand-written** member-crate style:
 
 ```toml
 [package]

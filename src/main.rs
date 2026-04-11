@@ -1,16 +1,25 @@
-//! Cargo subcommand to format and normalize Cargo.toml files according to
-//! workspace standards.
+//! Cargo subcommand to format and normalize `Cargo.toml` files (layout and
+//! TOML shape), not workspace dependency policy.
 //!
-//! This tool is an **opinionated enforcer**: it applies one canonical layout
-//! (top-level table order, `[package]` field order, sorted dependency tables,
-//! and workspace rules) so manifests are predictable in review and diff.
+//! This tool is an **opinionated layout enforcer**: canonical top-level table
+//! order, `[package]` field order, sorted dependency **keys**, and collapsing
+//! nested tables to inline form where applicable—so manifests are predictable
+//! in review and diff.
 //!
-//! This tool enforces:
-//! 1. All dependency versions at workspace level
-//! 2. Internal dependencies use { workspace = true }
-//! 3. All dependencies sorted alphabetically
-//! 4. Consistent `[package]` field order (`PACKAGE_FIELD_ORDER`)
-//! 5. Consistent top-level table order (`TOP_LEVEL_SECTION_ORDER`)
+//! It does **not** move versions into `[workspace.dependencies]`, rewrite
+//! crates to `workspace = true`, or edit `[features]` to propagate flags to
+//! dependencies. For that, use
+//! [`cargo-propagate-features`](https://github.com/dataroadinc/cargo-propagate-features),
+//! which wires `dep/feature` entries so enabling a feature on one crate enables
+//! the same-named features on its deps—while **this** crate only normalizes
+//! manifest layout (section order, key order, TOML shape) without changing
+//! dependency semantics.
+//!
+//! This tool applies:
+//! 1. Alphabetically sorted dependency **table keys** (not version rewriting)
+//! 2. Consistent `[package]` field order (`PACKAGE_FIELD_ORDER`)
+//! 3. Consistent top-level table order (`TOP_LEVEL_SECTION_ORDER`)
+//! 4. Nested-table → inline collapse in `[package]` and dependency tables
 
 use std::collections::BTreeMap;
 use std::path::{
@@ -102,7 +111,7 @@ const PACKAGE_FIELD_ORDER: &[&str] = &[
     bin_name = "cargo-fmt-toml",
     version = env!("CARGO_PKG_VERSION"),
     propagate_version = true,
-    about = "Opinionated Cargo.toml formatter and workspace policy enforcer",
+    about = "Opinionated Cargo.toml layout formatter (sections, keys, TOML shape)",
     after_help = "Cargo runs this program as: cargo-fmt-toml fmt-toml …"
 )]
 enum CargoFmtTomlCli {

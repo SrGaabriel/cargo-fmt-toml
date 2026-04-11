@@ -10,10 +10,14 @@ coding standards, tooling, and workflows:
 
 Cargo plugins:
 
-- `cargo-fmt-toml` - Format and normalize Cargo.toml files
+- `cargo-fmt-toml` - Opinionated **layout** for `Cargo.toml` (section order,
+  `[package]` field order, sorted dependency keys, inline collapse). Does not
+  change versions, `workspace = true`, or `[features]` semantics.
+- `cargo-propagate-features` - **Feature propagation**: adds `crate/feature`
+  entries under `[features]` so shared feature names flow to path/workspace
+  dependencies. Not a manifest pretty-printer.
 - `cargo-nightly` - Nightly toolchain management
 - `cargo-plugin-utils` - Shared utilities for cargo plugins
-- `cargo-propagate-features` - Propagate features to dependencies
 - `cargo-version-info` - Dynamic version computation
 
 Other Rust crates:
@@ -28,12 +32,23 @@ all repositories.
 ## Project Overview
 
 `cargo-fmt-toml` is a Cargo subcommand that formats and normalizes
-`Cargo.toml` files according to workspace standards. It enforces:
+`Cargo.toml` **layout** (section order, `[package]` field order, sorted
+dependency **keys**, nested-table collapse). It does **not** change versions,
+rewrite dependency specs to `workspace = true`, or propagate features.
 
-- Workspace-level dependency version management
-- Alphabetically sorted dependency sections
-- Consistent `[package]` section field ordering
-- Collapsed inline table syntax (e.g., `version = { workspace = true }`)
+[`cargo-propagate-features`](https://github.com/dataroadinc/cargo-propagate-features)
+edits `[features]` so enabling `X` on a crate enables `X` on dependencies that
+define the same feature. Use it for feature-graph correctness; use
+`cargo-fmt-toml` for consistent manifest structure. README.md has a comparison
+table.
+
+It applies:
+
+- Alphabetically sorted keys in dependency tables
+- Consistent `[package]` field ordering
+- Consistent top-level table ordering
+- Collapsed inline table syntax where the formatter collapses nested tables
+  (it does not invent `workspace = true` entries)
 
 ## Build Commands
 

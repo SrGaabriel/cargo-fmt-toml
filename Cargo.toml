@@ -1,6 +1,6 @@
 [package]
 name = "cargo-fmt-toml"
-description = "Cargo subcommand to format and normalize Cargo.toml files according to workspace standards"
+description = "Cargo subcommand to format and normalize Cargo.toml layout (section order, sorted dep keys, TOML shape)"
 version = "0.0.15"
 edition = "2024"
 license-file = "LICENSE"
