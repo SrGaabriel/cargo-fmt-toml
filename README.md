@@ -9,23 +9,44 @@
 Cargo subcommand to format and normalize `Cargo.toml` files according
 to workspace standards.
 
+Only manifests for **workspace members** are considered, and only if they lie
+under the **canonical workspace root** you pass (default: current directory).
+If that directory is inside a **git** work tree, manifests must also stay
+under `git rev-parse --show-toplevel` (so crates.io checkouts under
+`~/.cargo/registry` are never touched).
+
 ## Installation
 
-### Using cargo-binstall (Recommended)
+### Using cargo-binstall (recommended)
 
-The fastest way to install pre-built binaries:
+Pre-built binaries from GitHub Releases (see `[package.metadata.binstall]` in
+`Cargo.toml`):
 
 ```bash
 cargo install cargo-binstall
 cargo binstall cargo-fmt-toml
 ```
 
-### Using cargo install
-
-Build from source (slower, requires Rust toolchain):
+### Using cargo install (crates.io)
 
 ```bash
 cargo install cargo-fmt-toml
+```
+
+If the crate is not yet on crates.io, install from git:
+
+```bash
+cargo install --git https://github.com/dataroadinc/cargo-fmt-toml
+```
+
+### Network / offline Cargo config
+
+If the project you run `cargo install` from sets `net.offline = true` in
+`.cargo/config.toml`, either run the install from a directory without that
+setting or override for one invocation, for example:
+
+```bash
+CARGO_NET_OFFLINE=false cargo install cargo-fmt-toml
 ```
 
 ## Features
@@ -51,6 +72,13 @@ cargo fmt-toml --dry-run
 # Check if files need formatting (returns non-zero if changes
 # needed)
 cargo fmt-toml --check
+
+# Explicit workspace root
+cargo fmt-toml --workspace-path /path/to/repo
+```
+
+```bash
+cargo fmt-toml --help
 ```
 
 ## Package Section Format
@@ -80,14 +108,14 @@ All dependency sections are sorted alphabetically:
 
 ## Integration
 
-Add to your Makefile:
+After `cargo install cargo-fmt-toml` (or `cargo binstall`):
 
 ```makefile
 .PHONY: fmt-toml
 fmt-toml:
-    @cargo run --package cargo-fmt-toml
+	cargo fmt-toml
 
 .PHONY: check-fmt-toml
 check-fmt-toml:
-    @cargo run --package cargo-fmt-toml -- --check
+	cargo fmt-toml --check
 ```

@@ -27,21 +27,23 @@ use toml_edit::{
     Value,
 };
 
+/// Cargo runs this binary as `cargo-fmt-toml fmt-toml …` (first argument is
+/// always the `fmt-toml` subcommand name). Model that with a top-level
+/// subcommand enum. Use `name = "cargo"` + `bin_name = "cargo-fmt-toml"` so
+/// `--version` matches other Cargo plugins; use `override_usage` on the
+/// `fmt-toml` variant for help text.
 #[derive(Parser, Debug)]
 #[command(
-    name = "cargo-fmt-toml",
+    name = "cargo",
+    bin_name = "cargo-fmt-toml",
+    version = env!("CARGO_PKG_VERSION"),
+    propagate_version = true,
     about = "Format and normalize Cargo.toml files according to workspace standards",
-    bin_name = "cargo",
-    version
+    after_help = "Cargo runs this program as: cargo-fmt-toml fmt-toml …"
 )]
-struct Cli {
-    #[command(subcommand)]
-    command: Option<Command>,
-}
-
-#[derive(Parser, Debug)]
-enum Command {
-    #[command(name = "fmt-toml")]
+enum CargoFmtTomlCli {
+    /// Format every workspace member manifest under the workspace (and git) root
+    #[command(name = "fmt-toml", override_usage = "cargo fmt-toml [OPTIONS]")]
     FmtToml(FmtArgs),
 }
 
@@ -65,30 +67,106 @@ struct FmtArgs {
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
-
-    match cli.command {
-        Some(Command::FmtToml(args)) => fmt_toml(args),
-        None => {
-            // When invoked without a subcommand, show help
-            use clap::CommandFactory;
-            Cli::command().print_help()?;
-            Ok(())
-        }
+    match CargoFmtTomlCli::parse() {
+        CargoFmtTomlCli::FmtToml(args) => fmt_toml(args),
     }
+}
+
+fn try_git_worktree_root(start: &Path) -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(start)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8(output.stdout).ok()?;
+    let root = root.trim();
+    if root.is_empty() {
+        return None;
+    }
+    Path::new(root).canonicalize().ok()
+}
+
+/// `Cargo.toml` paths for workspace members only (`cargo metadata --no-deps`),
+/// restricted to the canonical workspace directory and (when inside a git work
+/// tree) to that repository root. Refuses crates.io checkout paths.
+fn workspace_member_manifest_paths(workspace_root: &Path) -> Result<Vec<PathBuf>> {
+    let workspace_root = workspace_root
+        .canonicalize()
+        .with_context(|| format!("could not canonicalize workspace {:?}", workspace_root))?;
+
+    let repo_root = try_git_worktree_root(&workspace_root);
+    if let Some(ref rr) = repo_root
+        && !workspace_root.starts_with(rr)
+    {
+        anyhow::bail!(
+            "workspace path {} is outside the git repository root {}",
+            workspace_root.display(),
+            rr.display()
+        );
+    }
+
+    let manifest_path = workspace_root.join("Cargo.toml");
+    if !manifest_path.is_file() {
+        anyhow::bail!(
+            "not a Cargo workspace root (missing {}): use --workspace-path",
+            manifest_path.display()
+        );
+    }
+
+    let metadata = cargo_metadata::MetadataCommand::new()
+        .manifest_path(&manifest_path)
+        .no_deps()
+        .exec()
+        .context("Failed to get cargo metadata (workspace packages only)")?;
+
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for pkg in metadata.packages {
+        let path = pkg.manifest_path.as_std_path();
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("could not canonicalize manifest path {}", path.display()))?;
+
+        if !canonical.starts_with(&workspace_root) {
+            anyhow::bail!(
+                "workspace member manifest {} is outside workspace root {}",
+                canonical.display(),
+                workspace_root.display()
+            );
+        }
+
+        if let Some(ref rr) = repo_root
+            && !canonical.starts_with(rr)
+        {
+            anyhow::bail!(
+                "refusing to format manifest {} (outside git repository {})",
+                canonical.display(),
+                rr.display()
+            );
+        }
+
+        let lossy = canonical.to_string_lossy();
+        if lossy.contains(".cargo/registry") || lossy.contains(".cargo\\registry") {
+            anyhow::bail!(
+                "refusing to format crates.io checkout manifest {}",
+                canonical.display()
+            );
+        }
+
+        paths.push(canonical);
+    }
+
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 fn fmt_toml(args: FmtArgs) -> Result<()> {
     let mut logger = ProgressLogger::new(args.quiet);
 
-    // Use cargo_metadata to get all workspace packages
-    let packages =
-        cargo_plugin_utils::get_workspace_packages(Some(&args.workspace_path.join("Cargo.toml")))?;
-
-    let crate_manifests: Vec<PathBuf> = packages
-        .iter()
-        .map(|pkg| pkg.manifest_path.as_std_path().to_path_buf())
-        .collect();
+    let crate_manifests = workspace_member_manifest_paths(&args.workspace_path)?;
 
     // Phase 1: Format all manifests and collect results.
     // No files are written yet — if any manifest fails to format,
@@ -496,6 +574,41 @@ fn sort_table_in_place(table: &mut Table, logger: &mut ProgressLogger) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_worktree_root_absent_without_repository() {
+        let base = std::env::temp_dir().join(format!(
+            "cargo-fmt-toml-no-git-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&base).expect("mkdir");
+        assert!(try_git_worktree_root(&base).is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn workspace_member_manifest_paths_excludes_registry_crates() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root = root.canonicalize().expect("canonicalize crate root");
+        let paths = workspace_member_manifest_paths(&root).expect("metadata");
+        assert_eq!(
+            paths.len(),
+            1,
+            "this repository is a single-package workspace; got {:?}",
+            paths
+        );
+        let manifest = &paths[0];
+        assert!(
+            manifest.starts_with(&root),
+            "manifest outside workspace tree: {}",
+            manifest.display()
+        );
+        let display = manifest.display().to_string();
+        assert!(
+            !display.contains(".cargo/registry"),
+            "registry path must not appear: {display}"
+        );
+    }
 
     /// Helper that runs `reorder_sections` on the given TOML string
     /// and returns the resulting TOML string.

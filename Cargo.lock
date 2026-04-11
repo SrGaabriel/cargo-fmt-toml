@@ -308,11 +308,12 @@ dependencies = [
 
 [[package]]
 name = "cargo-fmt-toml"
-version = "0.0.12"
+version = "0.0.14"
 dependencies = [
  "anyhow",
  "cargo-plugin-utils",
  "cargo-version-info",
+ "cargo_metadata",
  "clap",
  "serde",
  "sloughi",
