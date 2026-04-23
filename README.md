@@ -112,6 +112,9 @@ cargo fmt-toml --check
 
 # Explicit workspace root
 cargo fmt-toml --workspace-path /path/to/repo
+
+# Also format the virtual workspace root Cargo.toml
+cargo fmt-toml --include-virtual-root
 ```
 
 ```bash

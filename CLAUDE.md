@@ -66,6 +66,9 @@ cargo fmt-toml [OPTIONS]
 #   --dry-run              Show changes without modifying files
 #   --check                Exit code 1 if changes needed
 #   --workspace-path PATH  Path to workspace root (default: .)
+#   --include-virtual-root Also format the virtual workspace root
+#                          Cargo.toml (skipped by default because
+#                          cargo metadata --no-deps omits it)
 #   --quiet                Suppress output when no changes
 ```
 

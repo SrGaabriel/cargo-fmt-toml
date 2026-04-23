@@ -135,6 +135,10 @@ struct FmtArgs {
     #[arg(long, default_value = ".")]
     workspace_path: PathBuf,
 
+    /// Include root Cargo.toml when it is a virtual workspace
+    #[arg(long)]
+    include_virtual_root: bool,
+
     /// Suppress output when there are no changes
     #[arg(long)]
     quiet: bool,
@@ -163,10 +167,12 @@ fn try_git_worktree_root(start: &Path) -> Option<PathBuf> {
     Path::new(root).canonicalize().ok()
 }
 
-/// `Cargo.toml` paths for workspace members only (`cargo metadata --no-deps`),
-/// restricted to the canonical workspace directory and (when inside a git work
-/// tree) to that repository root. Refuses crates.io checkout paths.
-fn workspace_member_manifest_paths(workspace_root: &Path) -> Result<Vec<PathBuf>> {
+/// `Cargo.toml` paths for workspace members (`cargo metadata --no-deps`),
+/// optionally including a virtual workspace root manifest
+fn workspace_member_manifest_paths(
+    workspace_root: &Path,
+    include_virtual_root: bool,
+) -> Result<Vec<PathBuf>> {
     let workspace_root = workspace_root
         .canonicalize()
         .with_context(|| format!("could not canonicalize workspace {:?}", workspace_root))?;
@@ -232,6 +238,10 @@ fn workspace_member_manifest_paths(workspace_root: &Path) -> Result<Vec<PathBuf>
         paths.push(canonical);
     }
 
+    if include_virtual_root && is_virtual_workspace_manifest(&manifest_path)? {
+        paths.push(manifest_path.clone());
+    }
+
     paths.sort();
     paths.dedup();
     Ok(paths)
@@ -240,7 +250,8 @@ fn workspace_member_manifest_paths(workspace_root: &Path) -> Result<Vec<PathBuf>
 fn fmt_toml(args: FmtArgs) -> Result<()> {
     let mut logger = ProgressLogger::new(args.quiet);
 
-    let crate_manifests = workspace_member_manifest_paths(&args.workspace_path)?;
+    let crate_manifests =
+        workspace_member_manifest_paths(&args.workspace_path, args.include_virtual_root)?;
 
     // Phase 1: Format all manifests and collect results.
     // No files are written yet — if any manifest fails to format,
@@ -301,6 +312,15 @@ fn fmt_toml(args: FmtArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn is_virtual_workspace_manifest(manifest_path: &Path) -> Result<bool> {
+    let content = std::fs::read_to_string(manifest_path)
+        .with_context(|| format!("Failed to read {:?}", manifest_path))?;
+    let doc = content
+        .parse::<DocumentMut>()
+        .with_context(|| format!("Failed to parse {:?}", manifest_path))?;
+    Ok(doc.get("workspace").is_some() && doc.get("package").is_none())
 }
 
 /// Format a single manifest and return the formatted output string
@@ -687,7 +707,7 @@ workspace = true
     fn workspace_member_manifest_paths_excludes_registry_crates() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let root = root.canonicalize().expect("canonicalize crate root");
-        let paths = workspace_member_manifest_paths(&root).expect("metadata");
+        let paths = workspace_member_manifest_paths(&root, false).expect("metadata");
         assert_eq!(
             paths.len(),
             1,
@@ -705,6 +725,119 @@ workspace = true
             !display.contains(".cargo/registry"),
             "registry path must not appear: {display}"
         );
+    }
+
+    #[test]
+    fn detects_virtual_workspace_manifest() {
+        let base = std::env::temp_dir().join(format!(
+            "cargo-fmt-toml-virtual-detect-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("mkdir base");
+        let manifest = base.join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            "\
+[workspace]
+members = [\"crate-a\"]
+resolver = \"3\"
+",
+        )
+        .expect("write virtual manifest");
+
+        let is_virtual =
+            is_virtual_workspace_manifest(&manifest).expect("detect virtual workspace");
+        assert!(is_virtual, "expected virtual workspace detection");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn package_manifest_is_not_virtual_workspace() {
+        let base = std::env::temp_dir().join(format!(
+            "cargo-fmt-toml-package-detect-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("mkdir base");
+        let manifest = base.join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            "\
+[package]
+name = \"crate-a\"
+version = \"0.1.0\"
+edition = \"2024\"
+",
+        )
+        .expect("write package manifest");
+
+        let is_virtual = is_virtual_workspace_manifest(&manifest).expect("detect package manifest");
+        assert!(
+            !is_virtual,
+            "package manifest must not be treated as virtual workspace"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn include_virtual_root_adds_root_manifest_for_virtual_workspace() {
+        let base = std::env::temp_dir().join(format!(
+            "cargo-fmt-toml-include-virtual-root-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+
+        let member_dir = base.join("crate-a");
+        std::fs::create_dir_all(&member_dir).expect("mkdir member dir");
+
+        std::fs::write(
+            base.join("Cargo.toml"),
+            "\
+[workspace]
+members = [\"crate-a\"]
+resolver = \"3\"
+",
+        )
+        .expect("write root manifest");
+        std::fs::write(
+            member_dir.join("Cargo.toml"),
+            "\
+[package]
+name = \"crate-a\"
+version = \"0.1.0\"
+edition = \"2024\"
+",
+        )
+        .expect("write member manifest");
+        std::fs::write(member_dir.join("src/lib.rs"), "").unwrap_or_else(|_| {
+            std::fs::create_dir_all(member_dir.join("src")).expect("mkdir src");
+            std::fs::write(member_dir.join("src/lib.rs"), "").expect("write lib.rs");
+        });
+
+        let without_root =
+            workspace_member_manifest_paths(&base, false).expect("metadata without root");
+        let with_root = workspace_member_manifest_paths(&base, true).expect("metadata with root");
+
+        let root_manifest = base
+            .join("Cargo.toml")
+            .canonicalize()
+            .expect("canonical root manifest");
+
+        assert!(
+            !without_root.iter().any(|path| path == &root_manifest),
+            "root manifest should not be included by default: {:?}",
+            without_root
+        );
+        assert!(
+            with_root.iter().any(|path| path == &root_manifest),
+            "root manifest should be included with --include-virtual-root: {:?}",
+            with_root
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Helper that runs `reorder_sections` on the given TOML string
